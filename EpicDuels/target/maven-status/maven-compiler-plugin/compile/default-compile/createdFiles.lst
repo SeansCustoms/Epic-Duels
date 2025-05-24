@@ -1,0 +1,13 @@
+com\clansmp\EpicDuels\manager\DuelManager$3.class
+com\clansmp\EpicDuels\object\PlayerState.class
+com\clansmp\EpicDuels\object\Arena.class
+com\clansmp\EpicDuels\object\DuelChallenge.class
+com\clansmp\EpicDuels\manager\DuelManager.class
+com\clansmp\EpicDuels\manager\ArenaManager.class
+com\clansmp\EpicDuels\object\Duel.class
+com\clansmp\EpicDuels\listeners\DuelListener.class
+com\clansmp\EpicDuels\manager\DuelManager$1.class
+com\clansmp\EpicDuels\App.class
+com\clansmp\EpicDuels\object\DuelChallenge$1.class
+com\clansmp\EpicDuels\manager\DuelManager$2.class
+com\clansmp\EpicDuels\EpicDuels.class

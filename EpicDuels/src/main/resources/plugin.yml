@@ -1,0 +1,22 @@
+# plugin.yml
+name: EpicDuels
+version: 1.2.6
+main: com.clansmp.EpicDuels.EpicDuels
+api-version: 1.20 # Or your target API version
+commands:
+  duel:
+    description: EpicDuels commands.
+    usage: /<command> (accept,deny,cancel,arena,spawn)
+    # Add other aliases or permission default as needed
+
+permissions:
+  epicduels.arena.set:
+    description: Allows setting duel arena spawn points.
+    default: op # Only OPs can use this by default
+  epicduels.arena.list:
+    description: Allows listing duel arenas.
+    default: true # Everyone can list arenas (or op if preferred)
+  epicduels.spawn.set:
+    description: Allows setting the global return spawn location.
+    default: op
+  # Add other permissions you might have for /duel command
