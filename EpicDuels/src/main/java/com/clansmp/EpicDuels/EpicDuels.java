@@ -1,5 +1,7 @@
 package com.clansmp.EpicDuels;
 
+import com.clansmp.EpicDuels.commands.ArenaCommands;
+import com.clansmp.EpicDuels.commands.ReloadCommand;
 import com.clansmp.EpicDuels.listeners.DuelListener;
 import com.clansmp.EpicDuels.manager.ArenaManager;
 import com.clansmp.EpicDuels.manager.DuelManager;
@@ -21,6 +23,7 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.Collections;
+import java.util.Objects;
 
 public final class EpicDuels extends JavaPlugin implements CommandExecutor {
 
@@ -36,10 +39,19 @@ public final class EpicDuels extends JavaPlugin implements CommandExecutor {
         // Initialize managers
         this.arenaManager = new ArenaManager(this);
         this.duelManager = new DuelManager(this, arenaManager);
+        
+        //Read config setting for PVP outside of duel
+        if (!getConfig().contains("pvp-outside-duel")) {
+            getConfig().set("pvp-outside-duel", true); // Default to TRUE (PvP IS allowed outside duels)
+            saveConfig(); // Save the updated config to disk
+        }
 
         // Register this class as the CommandExecutor for /duel
         getCommand("duel").setExecutor(this);
-
+        //Register arena commands
+        getCommand("duelarenas").setExecutor(new ArenaCommands(this, arenaManager));
+        // Register config reload command
+        Objects.requireNonNull(getCommand("duelreload")).setExecutor(new ReloadCommand(this, arenaManager));
         // Register listeners
         getServer().getPluginManager().registerEvents(new DuelListener(this, duelManager, arenaManager), this);
     }

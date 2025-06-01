@@ -12,9 +12,10 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.ArrayList; // Added for random arena selection
-import java.util.List;     // Added for random arena selection
-import java.util.Random;   // Added for random arena selection
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import java.util.Collections; // Added for unmodifiableMap
 
 public class ArenaManager {
 
@@ -31,7 +32,8 @@ public class ArenaManager {
         loadSpawnLocation(); // Load the global spawn location on startup
     }
 
-    private void loadArenas() {
+    public void loadArenas() {
+    	arenas.clear();
         ConfigurationSection arenaSection = arenasConfig.getConfigurationSection("arenas");
         if (arenaSection != null) {
             for (String key : arenaSection.getKeys(false)) {
@@ -94,6 +96,14 @@ public class ArenaManager {
 
     public Arena getArena(int arenaNumber) {
         return arenas.get(arenaNumber);
+    }
+
+    /**
+     * Returns an unmodifiable map of all loaded arenas.
+     * @return A Map where keys are arena numbers and values are Arena objects.
+     */
+    public Map<Integer, Arena> getArenas() {
+        return Collections.unmodifiableMap(arenas);
     }
 
     public void setArenaLocation(int arenaNumber, int position, Location location) {
@@ -169,5 +179,55 @@ public class ArenaManager {
         } catch (IOException e) {
             plugin.getLogger().severe("Could not save config.yml: " + e.getMessage());
         }
+    }
+
+    // --- NEW METHODS REQUIRED FOR ARENACOMMANDS ---
+
+    /**
+     * Force releases all arenas, marking them as available.
+     * This iterates through all loaded Arena objects and sets their occupied status to false.
+     * It then saves the updated status to the config file.
+     */
+    public void forceReleaseAllArenas() {
+        for (Arena arena : arenas.values()) {
+            arena.setOccupied(false);
+        }
+        saveArenas(); // Save the changes to config.yml
+        plugin.getLogger().info("All duel arenas have been force released.");
+    }
+
+    /**
+     * Removes a specific arena by its number from memory and from the config file.
+     * @param arenaNumber The number of the arena to remove.
+     * @return true if the arena was found and removed, false otherwise.
+     */
+    public boolean removeArena(int arenaNumber) {
+        if (arenas.containsKey(arenaNumber)) {
+            arenas.remove(arenaNumber); // Remove from in-memory map
+            arenasConfig.set("arenas." + arenaNumber, null); // Remove the section from config
+            saveConfig(); // Save the config changes to disk
+            plugin.getLogger().info("Arena " + arenaNumber + " has been removed.");
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Removes all configured arenas from memory and from the config file.
+     */
+    public void removeAllArenas() {
+        arenas.clear(); // Clear all arenas from in-memory map
+        arenasConfig.set("arenas", null); // Remove the entire "arenas" section from config
+        saveConfig(); // Save the config changes to disk
+        plugin.getLogger().info("All duel arenas have been removed.");
+    }
+
+    // Helper for formatting Location for logging/messages
+    @SuppressWarnings("unused")
+	private String formatLocation(Location loc) {
+        if (loc == null) return "N/A";
+        return String.format("World: %s, X: %.1f, Y: %.1f, Z: %.1f",
+                loc.getWorld() != null ? loc.getWorld().getName() : "Unknown",
+                loc.getX(), loc.getY(), loc.getZ());
     }
 }

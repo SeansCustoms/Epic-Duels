@@ -1,21 +1,38 @@
 # plugin.yml
 name: EpicDuels
-version: 1.2.6
+version: 1.2.8
 main: com.clansmp.EpicDuels.EpicDuels
 api-version: 1.20 # Or your target API version
 commands:
+  duelreload:
+    description: Reload EpicDuels config.yml  # <--- Ensure this line uses SPACES, not tabs
+    usage: /duelreload
+    permission: epicduels.arena.set 
+    permission-message: You need the permission "epicduels.arena.set" to reload the EpicDuels config.
   duel:
     description: EpicDuels commands.
     usage: /<command> (accept,deny,cancel,arena,spawn)
     # Add other aliases or permission default as needed
+  duelarenas: # NEW COMMAND v1.2.8
+    description: Arena management commands for EpicDuels.
+    usage: |
+      /<command> list
+      /<command> release
+      /<command> remove <arenaNumber|all>
+    aliases: [duela] # Optional aliases
+    permission: epicduels.arena.base # Base permission for the command
+    permission-message: You do not have permission to use arena commands.
 
 permissions:
   epicduels.arena.set:
-    description: Allows setting duel arena spawn points.
+    description: Allows setting, releasing, and removing duel arenas.
     default: op # Only OPs can use this by default
   epicduels.arena.list:
     description: Allows listing duel arenas.
     default: true # Everyone can list arenas (or op if preferred)
+  epicduels.arena.base: # NEW BASE PERMISSION
+    description: Allows access to the /duelarenas command.
+    default: op # Set to 'true' if you want non-ops to see usage, but subcommands will check specific perms
   epicduels.spawn.set:
     description: Allows setting the global return spawn location.
     default: op

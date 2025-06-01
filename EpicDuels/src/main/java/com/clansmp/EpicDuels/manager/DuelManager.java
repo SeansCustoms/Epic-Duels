@@ -1,6 +1,5 @@
 package com.clansmp.EpicDuels.manager;
 
-//import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
@@ -8,13 +7,14 @@ import org.bukkit.scheduler.BukkitRunnable;
 import com.clansmp.EpicDuels.EpicDuels;
 import com.clansmp.EpicDuels.object.Duel;
 import com.clansmp.EpicDuels.object.DuelChallenge;
-import com.clansmp.EpicDuels.object.PlayerState;
+import com.clansmp.EpicDuels.object.PlayerState; // Ensure this is imported
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Sound;
 import org.bukkit.attribute.Attribute;
+import org.bukkit.potion.PotionEffect; // Import for PotionEffect
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -24,6 +24,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Objects;
 
+@SuppressWarnings("unused")
 public class DuelManager {
 
     private final EpicDuels plugin;
@@ -33,11 +34,15 @@ public class DuelManager {
     private final Map<Player, DuelChallenge> outgoingChallenges;
     private final Map<Player, DuelChallenge> incomingChallenges;
 
-    private final Map<Player, DuelChallenge> guiChallenges; // Map to store challenges in GUI setup phase (Challenger -> DuelChallenge)
+    private final Map<Player, DuelChallenge> guiChallenges;
 
-    private final Set<UUID> playersForcedToSpawnAtGlobal; // For players who logged out during a non-keep-inv duel
-    private final Map<UUID, UUID> playersDiedInDuelAndAwaitingRespawn; // PlayerUUID -> DuelUUID for natural death
-    private final Set<UUID> playersInCountdown; // Track players in countdown
+    private final Set<UUID> playersForcedToSpawnAtGlobal;
+    private final Map<UUID, UUID> playersDiedInDuelAndAwaitingRespawn;
+    private final Set<UUID> playersInCountdown;
+    private final Set<UUID> disconnectedWinners;
+
+    // NEW: Map to store player state for keep-inventory duels when players log out
+    private final Map<UUID, PlayerState> loggedOutKeepInvPlayers;
 
     public DuelManager(EpicDuels plugin, ArenaManager arenaManager) {
         this.plugin = plugin;
@@ -48,8 +53,24 @@ public class DuelManager {
         this.guiChallenges = new HashMap<>();
         this.playersForcedToSpawnAtGlobal = new HashSet<>();
         this.playersDiedInDuelAndAwaitingRespawn = new ConcurrentHashMap<>();
-        this.playersInCountdown = new HashSet<>(); // Initialize the countdown set
+        this.playersInCountdown = new HashSet<>();
+        this.loggedOutKeepInvPlayers = new ConcurrentHashMap<>(); // Initialize
+        this.disconnectedWinners = ConcurrentHashMap.newKeySet();
     }
+
+    // --- NEW: Logout/Login state methods for KeepInv Duels ---
+    public void addLoggedOutKeepInvPlayerState(UUID playerUUID, PlayerState state) {
+        loggedOutKeepInvPlayers.put(playerUUID, state);
+    }
+
+    public PlayerState getLoggedOutKeepInvPlayerState(UUID playerUUID) {
+        return loggedOutKeepInvPlayers.get(playerUUID);
+    }
+
+    public void removeLoggedOutKeepInvPlayerState(UUID playerUUID) {
+        loggedOutKeepInvPlayers.remove(playerUUID);
+    }
+    // --- END NEW ---
 
     // --- Player Respawn Queue Methods (for logout death) ---
     public void addPlayerToGlobalSpawnQueue(UUID playerUUID) {
@@ -103,7 +124,6 @@ public class DuelManager {
         guiChallenges.remove(challenger);
     }
 
-
     // --- Duel Challenge & Retrieval Methods ---
 
     public Duel getDuelByPlayer(Player player) {
@@ -111,14 +131,12 @@ public class DuelManager {
     }
 
     public Duel getDuelById(UUID duelId) {
-        // Since activeDuels stores by player UUID, we need to iterate over values to find by Duel ID.
-        // This is not the most efficient for large numbers of active duels, but suitable for typical use.
         for (Duel duel : activeDuels.values()) {
             if (duel.getDuelId().equals(duelId)) {
                 return duel;
             }
         }
-        return null; // Not found
+        return null;
     }
 
     public DuelChallenge getPendingChallengeByPlayer(Player player) {
@@ -129,9 +147,8 @@ public class DuelManager {
         return outgoingChallenges.get(player);
     }
 
-    public void removeDuel(UUID duelId, String source) { // Added 'source' parameter
+    public void removeDuel(UUID duelId, String source) {
         Duel duelToRemove = null;
-        // Search for the duel by ID in the active duels map (values)
         for (Duel duel : activeDuels.values()) {
             if (duel.getDuelId().equals(duelId)) {
                 duelToRemove = duel;
@@ -139,33 +156,31 @@ public class DuelManager {
             }
         }
         if (duelToRemove != null) {
-            // Remove by both player UUIDs since it's a map keyed by player UUID
             activeDuels.remove(duelToRemove.getChallengerUUID());
             activeDuels.remove(duelToRemove.getChallengedUUID());
 
-            // Also remove from your playersDiedInDuelAndAwaitingRespawn if it's there.
             playersDiedInDuelAndAwaitingRespawn.remove(duelToRemove.getChallengerUUID());
             playersDiedInDuelAndAwaitingRespawn.remove(duelToRemove.getChallengedUUID());
-            // --- MODIFICATION START ---
-            // Set duel inactive and release arena here, as this is the final cleanup point.
+            
+            // Ensure no player state is lingering if they logged out previously
+            removeLoggedOutKeepInvPlayerState(duelToRemove.getChallengerUUID());
+            removeLoggedOutKeepInvPlayerState(duelToRemove.getChallengedUUID());
+
             duelToRemove.setActive(false);
             arenaManager.releaseArena(duelToRemove.getArenaNumber());
-            // Updated log message to include the source
             plugin.getLogger().info("Duel " + duelId + " fully cleaned up by " + source + " and arena " + duelToRemove.getArenaNumber() + " released.");
-            // --- MODIFICATION END ---
         } else {
-             plugin.getLogger().warning("Attempted to remove non-existent duel with ID: " + duelId + " from source: " + source);
+            plugin.getLogger().warning("Attempted to remove non-existent duel with ID: " + duelId + " from source: " + source);
         }
     }
-
-
 
     // --- Player State Management Methods ---
 
     public void preparePlayerForDuel(Player player, Duel duel) {
         if (player == null || !player.isOnline()) return;
 
-        // Reset health/food/effects for fairness, but do NOT clear inventory
+        // Reset health/food/effects for fairness, but do NOT clear inventory here.
+        // Inventory is handled by the duel's keepInventory setting or logout logic.
         if (player.getAttribute(Attribute.GENERIC_MAX_HEALTH) != null) {
             player.setHealth(player.getAttribute(Attribute.GENERIC_MAX_HEALTH).getValue());
         } else {
@@ -181,10 +196,12 @@ public class DuelManager {
         player.setAllowFlight(false);
         player.getActivePotionEffects().forEach(effect -> player.removePotionEffect(effect.getType()));
 
-        // Inventory is *not* cleared here, players duel with their current gear.
         plugin.getLogger().info("Prepared " + player.getName() + " for duel.");
     }
 
+    // This method is used to restore a player's *general* state (health, food, gamemode, effects, flight)
+    // Inventory is handled separately by PlayerDeathEvent (Bukkit) or PlayerJoinEvent (for logout)
+    // If you're reading this, I hope these notes are helpful xD
     public void restorePlayerState(Player player, Duel duel) {
         if (player == null || !player.isOnline()) {
             plugin.getLogger().warning("Attempted to restore state for offline or null player.");
@@ -192,14 +209,16 @@ public class DuelManager {
         }
 
         PlayerState originalState = null;
-        if (duel != null) {
+        if (duel != null) { // Duel object is passed if coming from respawn or forfeit
             if (player.getUniqueId().equals(duel.getChallengerUUID())) {
                 originalState = duel.getChallengerOriginalState();
             } else if (player.getUniqueId().equals(duel.getChallengedUUID())) {
                 originalState = duel.getChallengedOriginalState();
             }
         }
-
+        
+        // If no duel context (e.g., from a command or general cleanup) and no original state,
+        // revert to default survival.
         if (originalState == null) {
             plugin.getLogger().warning("No original state found for player " + player.getName() + " to restore. Setting to default survival.");
             player.setGameMode(GameMode.SURVIVAL);
@@ -212,21 +231,9 @@ public class DuelManager {
         player.setFoodLevel(originalState.getFoodLevel());
         player.setSaturation(originalState.getSaturation());
 
-        // We specifically remove setting XP/Level here because PlayerRespawnEvent will handle it
-        // directly from playerDuelXPSave.
-        // player.setLevel(originalState.getLevel());
-        // player.setExp(originalState.getExp());
-        // player.setTotalExperience(originalState.getTotalExperience());
-
         player.setGameMode(originalState.getGameMode());
 
-        player.getInventory().clear();
-        player.getInventory().setContents(originalState.getInventoryContents());
-        player.getInventory().setHelmet(originalState.getHelmet());
-        player.getInventory().setChestplate(originalState.getChestplate());
-        player.getInventory().setLeggings(originalState.getLeggings());
-        player.getInventory().setBoots(originalState.getBoots());
-
+        // Clear all active potion effects before applying original ones
         player.getActivePotionEffects().forEach(effect -> player.removePotionEffect(effect.getType()));
         originalState.getPotionEffects().forEach(player::addPotionEffect);
 
@@ -235,13 +242,52 @@ public class DuelManager {
 
         player.setFireTicks(0);
         player.setFallDistance(0);
-        plugin.getLogger().info("Restored state for player " + player.getName());
+        plugin.getLogger().info("Restored general state for player " + player.getName());
+    }
+    
+    // 1.2.8: Method for restoring FULL player state including inventory/XP (used for logged-out keep-inv players)
+    public void restoreFullPlayerState(Player player, PlayerState savedState) {
+        if (player == null || !player.isOnline() || savedState == null) {
+            plugin.getLogger().warning("Attempted to restore full state for null player or state.");
+            return;
+        }
+
+        player.setHealth(savedState.getHealth());
+        player.setFoodLevel(savedState.getFoodLevel());
+        player.setSaturation(savedState.getSaturation());
+        
+        player.setTotalExperience(savedState.getTotalExperience()); // Restore total XP
+        player.setLevel(savedState.getLevel());
+        player.setExp(savedState.getExp());
+
+        player.setGameMode(savedState.getGameMode());
+
+        // Clear existing inventory and restore saved one
+        player.getInventory().clear();
+        if (savedState.hasInventorySaved()) { // Check if inventory was actually saved
+            player.getInventory().setContents(savedState.getInventoryContents());
+            player.getInventory().setHelmet(savedState.getHelmet());
+            player.getInventory().setChestplate(savedState.getChestplate());
+            player.getInventory().setLeggings(savedState.getLeggings());
+            player.getInventory().setBoots(savedState.getBoots());
+        }
+
+        player.getActivePotionEffects().forEach(effect -> player.removePotionEffect(effect.getType()));
+        savedState.getPotionEffects().forEach(player::addPotionEffect);
+
+        player.setFlying(savedState.isFlying());
+        player.setAllowFlight(savedState.canFly());
+
+        player.setFireTicks(0);
+        player.setFallDistance(0);
+        plugin.getLogger().info("Restored full state (including inventory) for player " + player.getName());
     }
 
 
     // --- Duel Lifecycle Methods ---
 
     public void startChallenge(Player challenger, Player challenged, boolean keepInventory) {
+        // ... (unchanged)
         DuelChallenge existingOutgoing = getOutgoingChallengeByPlayer(challenger);
         if (existingOutgoing != null) {
             cancelChallenge(existingOutgoing);
@@ -256,7 +302,7 @@ public class DuelManager {
         outgoingChallenges.put(challenger, challenge);
         incomingChallenges.put(challenged, challenge);
 
-        removeGuiChallenge(challenger); // Remove from GUI tracking as challenge is now formal
+        removeGuiChallenge(challenger);
 
         challenger.sendMessage(Component.text("You challenged " + challenged.getName() + " to a duel (Keep Inventory: " + (keepInventory ? "YES" : "NO") + "). Waiting for their response...").color(NamedTextColor.GOLD));
         challenged.sendMessage(Component.text(challenger.getName() + " has challenged you to a duel (Keep Inventory: " + (keepInventory ? "YES" : "NO") + ")! Type /duel accept to accept.").color(NamedTextColor.GOLD));
@@ -292,13 +338,12 @@ public class DuelManager {
         if (arenaNumber == -1) {
             player.sendMessage(Component.text("No available arenas at the moment. Please try again later.").color(NamedTextColor.RED));
             challenger.sendMessage(Component.text("No available arenas at the moment. Please try again later.").color(NamedTextColor.RED));
-            // Note: arenaManager.releaseArena(arenaNumber) is removed here as arenaNumber is -1 and it's not a valid arena to release.
             cancelChallenge(challenge);
             return;
         }
 
-        // Player states are saved HERE, BEFORE preparing them for the duel!
-        Duel newDuel = new Duel(challenger, challenged, arenaNumber, keepInventory);
+        // Duel object is now created with the new PlayerState saving (no inventory)
+        Duel newDuel = new Duel(challenger, challenged, arenaNumber, keepInventory); // Uses new constructor
         newDuel.setActive(true);
 
         // Prepare players for the duel (reset health/food/effects, but keep inventory)
@@ -325,23 +370,20 @@ public class DuelManager {
         outgoingChallenges.remove(challenger);
         incomingChallenges.remove(challenged);
 
-        // Announce the start of the duel
         challenger.sendMessage(Component.text("Your duel with " + challenged.getName() + " has begun!").color(NamedTextColor.GREEN));
         challenged.sendMessage(Component.text("Your duel with " + challenger.getName() + " has begun!").color(NamedTextColor.GREEN));
 
-        // Add players to countdown set to prevent movement
         addPlayerToCountdown(challenger.getUniqueId());
         addPlayerToCountdown(challenged.getUniqueId());
 
-        // Start countdown
         new BukkitRunnable() {
             int countdown = 5;
             @Override
             public void run() {
                 if (countdown > 0) {
                     Component message = Component.text("Duel starting in ").color(NamedTextColor.YELLOW)
-                                                 .append(Component.text(countdown).color(NamedTextColor.GOLD).decorate(TextDecoration.BOLD))
-                                                 .append(Component.text("...").color(NamedTextColor.YELLOW));
+                                             .append(Component.text(countdown).color(NamedTextColor.GOLD).decorate(TextDecoration.BOLD))
+                                             .append(Component.text("...").color(NamedTextColor.YELLOW));
                     if (challenger.isOnline() && activeDuels.containsKey(challenger.getUniqueId())) {
                         challenger.sendActionBar(message);
                         challenger.playSound(challenger.getLocation(), Sound.BLOCK_NOTE_BLOCK_HAT, 1.0f, 1.0f);
@@ -361,7 +403,6 @@ public class DuelManager {
                         challenged.sendActionBar(message);
                         challenged.playSound(challenged.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 1.0f, 1.0f);
                     }
-                    // Remove players from countdown set after it finishes
                     removePlayerFromCountdown(challenger.getUniqueId());
                     removePlayerFromCountdown(challenged.getUniqueId());
                     cancel();
@@ -371,6 +412,7 @@ public class DuelManager {
     }
 
     public void cancelChallenge(DuelChallenge challenge) {
+        // ... (unchanged)
         if (challenge == null) return;
 
         challenge.cancelTimeout();
@@ -381,7 +423,7 @@ public class DuelManager {
         outgoingChallenges.remove(challenger);
         incomingChallenges.remove(challenged);
 
-        removeGuiChallenge(challenger); // Ensure GUI-related challenge is also cleared
+        removeGuiChallenge(challenger);
 
         if (challenger != null && challenger.isOnline()) {
             challenger.sendMessage(Component.text("Your duel challenge to " + (challenged != null ? challenged.getName() : "an unknown player") + " has been cancelled.").color(NamedTextColor.RED));
@@ -391,30 +433,58 @@ public class DuelManager {
         }
         plugin.getLogger().info("Duel challenge between " + (challenger != null ? challenger.getName() : "N/A") + " and " + (challenged != null ? challenged.getName() : "N/A") + " cancelled.");
     }
+    public boolean isDisconnectedWinner(UUID uuid) {
+        return disconnectedWinners.contains(uuid);
+    }
+    public void removeDisconnectedWinner(UUID uuid) {
+        disconnectedWinners.remove(uuid);
+    }
 
     public void endDuel(Player winner, Player loser, Duel duel) {
-        if (duel == null) return;
-
-        // Clean up duel state (these were already commented out, good!)
-        //activeDuels.remove(duel.getChallengerUUID());
-        //activeDuels.remove(duel.getChallengedUUID());
-        // --- MODIFICATION START ---
-        // Removed duel.setActive(false) from here; it's now in removeDuel.
-        // Removed arenaManager.releaseArena() and its corresponding log from here; it's now in removeDuel.
-        // --- MODIFICATION END ---
+        if (duel == null) {
+            plugin.getLogger().warning("endDuel called with null duel object.");
+            return;
+        }
 
         // --- Handle Winner ---
-        if (winner != null && winner.isOnline()) {
-            winner.sendMessage(Component.text("Congratulations! You won the duel!").color(NamedTextColor.GOLD).decorate(TextDecoration.BOLD));
+        if (winner != null) { // We check if winner is null here for safety
+            if (winner.isOnline()) { // Only process online winners for the teleport countdown
+                winner.sendMessage(Component.text("Congratulations! You won the duel!").color(NamedTextColor.GOLD).decorate(TextDecoration.BOLD));
 
-            if (!duel.isKeepInventory()) { // Keep Inventory OFF -> give time for loot collection
-                winner.sendMessage(Component.text("You have 30 seconds to collect the loot from " + (loser != null ? loser.getName() : "your opponent") + ".").color(NamedTextColor.GREEN));
-                winner.sendMessage(Component.text("You will be teleported to the global spawn in 30 seconds.").color(NamedTextColor.GRAY));
+                // Restore general player state for winner (health, food, etc.).
+                restorePlayerState(winner, duel);
+                winner.setGameMode(GameMode.SURVIVAL);
+                winner.setFlying(false);
+                winner.setAllowFlight(false);
+
+                long delayTicks = duel.isKeepInventory() ? 5 * 20L : 30 * 20L;
+
+                Component initialMessage = duel.isKeepInventory() ?
+                    Component.text("You will be teleported to the global spawn in 5 seconds...").color(NamedTextColor.AQUA) :
+                    Component.text("You have 30 seconds to collect the loot from " + (loser != null ? loser.getName() : "your opponent") + ".").color(NamedTextColor.GREEN)
+                             .append(Component.text("\nYou will be teleported to the global spawn after this time.").color(NamedTextColor.GRAY));
+                winner.sendMessage(initialMessage);
 
                 new BukkitRunnable() {
+                    int countdown = (int) (delayTicks / 20L);
                     @Override
                     public void run() {
-                        if (winner.isOnline()) {
+                        // --- MODIFIED: Add logic here for winner disconnecting during countdown ---
+                        if (!winner.isOnline()) {
+                            // Winner logged out during countdown.
+                            // Mark them so they get teleported to spawn on next login.
+                            disconnectedWinners.add(winner.getUniqueId());
+                            plugin.getLogger().info("Winner " + winner.getName() + " disconnected during teleport countdown. Marking for spawn return on rejoin.");
+                            cancel(); // Stop this specific task
+                            return;
+                        }
+
+                        if (countdown > 0) {
+                            Component message = Component.text("Teleporting in " + countdown + "...").color(NamedTextColor.YELLOW);
+                            winner.sendActionBar(message);
+                            winner.playSound(winner.getLocation(), Sound.BLOCK_NOTE_BLOCK_HAT, 1.0f, 1.0f);
+                            countdown--;
+                        } else {
                             Location spawnLoc = arenaManager.getSpawnLocation();
                             if (spawnLoc != null) {
                                 winner.teleport(spawnLoc);
@@ -422,72 +492,52 @@ public class DuelManager {
                             } else {
                                 winner.sendMessage(Component.text("Global spawn location not set, spawning at world spawn.").color(NamedTextColor.RED));
                             }
+                            winner.sendActionBar(Component.text("Teleported!").color(NamedTextColor.GREEN));
+                            cancel();
                         }
                     }
-                }.runTaskLater(plugin, 30 * 20L); // 30 seconds * 20 ticks/second
+                }.runTaskTimer(plugin, 0L, 20L);
 
-            } else { // Keep Inventory ON -> give 5 seconds to bask in glory
-                winner.sendMessage(Component.text("You will be teleported to the global spawn in 5 seconds...").color(NamedTextColor.AQUA));
-                new BukkitRunnable() {
-                    int countdown = 5;
-                    @Override
-                    public void run() {
-                        if (winner.isOnline()) {
-                            if (countdown > 0) {
-                                winner.sendActionBar(Component.text("Teleporting in " + countdown + "...").color(NamedTextColor.YELLOW));
-                                winner.playSound(winner.getLocation(), Sound.BLOCK_NOTE_BLOCK_HAT, 1.0f, 1.0f);
-                                countdown--;
-                            } else {
-                                Location spawnLoc = arenaManager.getSpawnLocation();
-                                if (spawnLoc != null) {
-                                    winner.teleport(spawnLoc);
-                                    winner.sendMessage(Component.text("You have been teleported to the global spawn location.").color(NamedTextColor.AQUA));
-                                } else {
-                                    winner.sendMessage(Component.text("Global spawn location not set, spawning at world spawn.").color(NamedTextColor.RED));
-                                }
-                                winner.sendActionBar(Component.text("Teleported!").color(NamedTextColor.GREEN));
-                                cancel();
-                            }
-                        } else {
-                            cancel(); // Cancel if winner goes offline
-                        }
-                    }
-                }.runTaskTimer(plugin, 0L, 20L); // 5 seconds * 20 ticks/second
+            } else {
+                // Winner is OFFLINE at the moment endDuel is called (e.g., opponent quit, making this player the winner)
+                // Mark them to be teleported to spawn on their next login.
+                disconnectedWinners.add(winner.getUniqueId());
+                plugin.getLogger().info("Winner " + winner.getName() + " was offline when duel ended. Marking for spawn return on rejoin.");
             }
-            // Always ensure winner is in survival mode and flight off if not an admin
-            winner.setGameMode(GameMode.SURVIVAL);
-            winner.setFlying(false);
-            winner.setAllowFlight(false);}
-        // handle loser
-        {
+        }
+
+
+        // --- Handle Loser ---
         if (loser != null) {
             if (loser.isOnline()) {
                 if (loser.getHealth() <= 0) { // Loser died naturally in the duel
-                    plugin.getLogger().info("Loser " + loser.getName() + " died in duel, marking for respawn handling.");
+                    plugin.getLogger().info("Loser " + loser.getName() + " died in duel, marking for respawn handling. Duel ID: " + duel.getDuelId());
                     addPlayerDiedInDuel(loser.getUniqueId(), duel.getDuelId());
-                } else { // Loser forfeited or disconnected while still alive
-                    // ... (restore state for forfeiture, teleport) ...
-                    plugin.getLogger().info("Loser " + loser.getName() + " forfeited. Fully cleaning up duel: " + duel.getDuelId());
-                    // Old: removeDuel(duel.getDuelId());
-                    removeDuel(duel.getDuelId(), "endDuel_Forfeiture"); // Updated call
+                } else { // Loser forfeited by command or disconnected while still alive
+                    plugin.getLogger().info("Loser " + loser.getName() + " forfeited. Restoring state and cleaning up duel: " + duel.getDuelId());
+                    restorePlayerState(loser, duel);
+                    Location spawnLoc = arenaManager.getSpawnLocation();
+                    if (spawnLoc != null) {
+                        loser.teleport(spawnLoc);
+                        loser.sendMessage(Component.text("You forfeited the duel and have been returned to spawn.").color(NamedTextColor.RED));
+                    } else {
+                        loser.sendMessage(Component.text("You forfeited the duel. Global spawn not set, returning to world spawn.").color(NamedTextColor.RED));
+                    }
+                    removeDuel(duel.getDuelId(), "endDuel_Forfeiture_OnlineLoser");
                 }
-            } else {
-                // Loser is offline. Their state won't be restored, and teleport is not applicable.
-                plugin.getLogger().info("Loser " + loser.getName() + " was offline during duel end. No state restoration/teleport.");
-                // If the loser is offline and the duel needs to be cleaned up because the other player finished,
-                // you might still want to call removeDuel here, or rely on PlayerQuitEvent if that fires earlier.
-                // For now, let's keep it consistent with the onPlayerQuit logic for offline players.
-                // If this branch is reached, and the duel isn't cleaned up by the PlayerQuitEvent,
-                // it might linger. For now, rely on PlayerQuitEvent to handle offline players.
+            } else { // Loser is offline
+                plugin.getLogger().info("Loser " + loser.getName() + " was offline during duel end. No immediate state restoration/teleport.");
+                // If this loser was a keep-inventory player, their state should already be in `loggedOutKeepInvPlayers`
+                // if they logged out during the duel. No explicit action needed here for them.
             }
         }
-        plugin.getLogger().info("Duel " + duel.getDuelId() + " between " +
-                (winner != null ? winner.getName() : "N/A") + " and " +
-                (loser != null ? loser.getName() : "N/A") + " has ended (logically).");
-    }
 
-        plugin.getLogger().info("Duel " + duel.getDuelId() + " between " +
-                (winner != null ? winner.getName() : "N/A") + " and " +
-                (loser != null ? loser.getName() : "N/A") + " has ended (logically).");
+        // --- Final Duel Cleanup (Ensures duel is always removed) ---
+        if (getDuelById(duel.getDuelId()) != null) {
+            plugin.getLogger().info("Finalizing duel cleanup for " + duel.getDuelId() + " from endDuel method.");
+            removeDuel(duel.getDuelId(), "endDuel_FinalCleanup");
+        } else {
+            plugin.getLogger().info("Duel " + duel.getDuelId() + " already removed during endDuel execution.");
+        }
     }
 }
